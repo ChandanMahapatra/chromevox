@@ -42,27 +42,23 @@ cvox.InjectedScriptLoader.fetchCode = function(files, done) {
       // directly, with a magic comment that makes Chrome treat it like it
       // loaded normally. Wait until it's fetched before loading the
       // next script.
-      var xhr = new XMLHttpRequest();
-      var url = chrome.extension.getURL(src) + '?' + new Date().getTime();
-      xhr.onreadystatechange = function() {
-        if (xhr.readyState == 4) {
-          var scriptText = xhr.responseText;
-          // Add a magic comment to the bottom of the file so that
-          // Chrome knows the name of the script in the JavaScript debugger.
-          var debugSrc = src.replace('closure/../', '');
-          // The 'chromevox' id is only used in the DevTools instead of a long
-          // extension id.
-          scriptText += '\n//# sourceURL= chrome-extension://chromevox/' +
-              debugSrc + '\n';
-          code[src] = scriptText;
-          waiting--;
-          if (waiting == 0) {
-            done(code);
-          }
+      var url = chrome.runtime.getURL(src) + '?' + new Date().getTime();
+      fetch(url).then(function(response) {
+        return response.text();
+      }).then(function(scriptText) {
+        // Add a magic comment to the bottom of the file so that
+        // Chrome knows the name of the script in the JavaScript debugger.
+        var debugSrc = src.replace('closure/../', '');
+        // The 'chromevox' id is only used in the DevTools instead of a long
+        // extension id.
+        scriptText += '\n//# sourceURL= chrome-extension://chromevox/' +
+            debugSrc + '\n';
+        code[src] = scriptText;
+        waiting--;
+        if (waiting == 0) {
+          done(code);
         }
-      };
-      xhr.open('GET', url);
-      xhr.send(null);
+      });
   }
 
   files.forEach(function(f) { loadScriptAsCode(f); });

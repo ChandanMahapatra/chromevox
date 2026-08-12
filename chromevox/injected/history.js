@@ -390,28 +390,7 @@ cvox.History.prototype.dumpJsOutput_ = function(opt_skipCommands) {
  * Send the history to Google Feedback.
  */
 cvox.History.sendToFeedback = function() {
-  var history = cvox.History.getInstance();
-  var output = history.events_.map(function(e) {
-    return e.outputObject();
-  });
-
-  var feedbackScript = document.createElement('script');
-  feedbackScript.type = 'text/javascript';
-  feedbackScript.src = 'https://www.gstatic.com/feedback/api.js';
-
-  var runFeedbackScript = document.createElement('script');
-  runFeedbackScript.type = 'text/javascript';
-  runFeedbackScript.innerHTML =
-      'userfeedback.api.startFeedback(' +
-          '{ productId: \'76092\' }, ' +
-          '{ cvoxHistory: ' + cvox.ChromeVoxJSON.stringify(
-              cvox.ChromeVoxJSON.stringify(output)) + ' });';
-
-  feedbackScript.onload = function() {
-    document.body.appendChild(runFeedbackScript);
-  };
-
-  document.body.appendChild(feedbackScript);
+  console.warn('ChromeVox feedback UI is disabled in MV3 builds.');
 };
 
 

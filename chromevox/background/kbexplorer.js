@@ -45,8 +45,13 @@ cvox.KbExplorer.init = function() {
  * @param {Event} evt key event.
  */
 cvox.KbExplorer.onKeyDown = function(evt) {
-  chrome.extension.getBackgroundPage()['speak'](
-      cvox.KeyUtil.getReadableNameForKeyCode(evt.keyCode), false, {});
+  chrome.runtime.sendMessage({
+    'target': 'options',
+    'action': 'speak',
+    'text': cvox.KeyUtil.getReadableNameForKeyCode(evt.keyCode),
+    'queueMode': false,
+    'properties': {}
+  });
   evt.preventDefault();
   evt.stopPropagation();
 };

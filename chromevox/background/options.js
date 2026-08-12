@@ -49,6 +49,22 @@ cvox.OptionsPage.prefs;
 
 
 /**
+ * Cached preference state from the background context.
+ * @type {!Object}
+ * @private
+ */
+cvox.OptionsPage.prefsState_ = {};
+
+
+/**
+ * Cached key map state from the background context.
+ * @type {?cvox.KeyMap}
+ * @private
+ */
+cvox.OptionsPage.keyMapState_ = null;
+
+
+/**
  * A mapping from keycodes to their human readable text equivalents.
  * This is initialized in cvox.OptionsPage.init for internationalization.
  * @type {Object.<string, string>}
@@ -72,31 +88,146 @@ cvox.OptionsPage.TEXT_TO_KEYCODE = {
 cvox.OptionsPage.init = function() {
   cvox.ChromeVox.msgs = cvox.HostFactory.getMsgs();
 
-  cvox.OptionsPage.prefs = chrome.extension.getBackgroundPage().prefs;
-  cvox.OptionsPage.populateKeyMapSelect();
-  cvox.OptionsPage.addKeys();
-  cvox.OptionsPage.populateVoicesSelect();
-  cvox.ChromeVox.msgs.addTranslatedMessagesToDom(document);
+  cvox.OptionsPage.refreshState_(function() {
+    cvox.OptionsPage.populateKeyMapSelect();
+    cvox.OptionsPage.addKeys();
+    cvox.OptionsPage.populateVoicesSelect();
+    cvox.ChromeVox.msgs.addTranslatedMessagesToDom(document);
 
-  cvox.OptionsPage.update();
+    cvox.OptionsPage.update();
 
-  document.addEventListener('change', cvox.OptionsPage.eventListener, false);
-  document.addEventListener('click', cvox.OptionsPage.eventListener, false);
-  document.addEventListener('keydown', cvox.OptionsPage.eventListener, false);
+    document.addEventListener('change', cvox.OptionsPage.eventListener, false);
+    document.addEventListener('click', cvox.OptionsPage.eventListener, false);
+    document.addEventListener('keydown', cvox.OptionsPage.eventListener, false);
 
-  cvox.ExtensionBridge.addMessageListener(function(message) {
-    if (message['keyBindings'] || message['prefs']) {
-      cvox.OptionsPage.update();
+    cvox.ExtensionBridge.addMessageListener(function(message) {
+      if (message['keyBindings'] || message['prefs']) {
+        cvox.OptionsPage.refreshState_(function() {
+          cvox.OptionsPage.update();
+        });
+      }
+    });
+
+    document.getElementById('selectKeys').addEventListener(
+        'click', cvox.OptionsPage.reset, false);
+
+    if (cvox.PlatformUtil.matchesPlatform(cvox.PlatformFilter.WML)) {
+      document.getElementById('version').textContent =
+          chrome.runtime.getManifest().version;
     }
   });
+};
 
-  document.getElementById('selectKeys').addEventListener(
-      'click', cvox.OptionsPage.reset, false);
 
-  if (cvox.PlatformUtil.matchesPlatform(cvox.PlatformFilter.WML)) {
-    document.getElementById('version').textContent =
-        chrome.app.getDetails().version;
-  }
+/**
+ * Sends a request to the background context.
+ * @param {!Object} request The request payload.
+ * @param {function(*):void=} opt_callback The optional callback.
+ * @private
+ */
+cvox.OptionsPage.sendBackgroundMessage_ = function(request, opt_callback) {
+  request['target'] = 'options';
+  chrome.runtime.sendMessage(request, function(response) {
+    if (response && response['prefs']) {
+      cvox.OptionsPage.installState_(response);
+    }
+    if (opt_callback) {
+      opt_callback(response || {});
+    }
+  });
+};
+
+
+/**
+ * Installs background state into local caches and the prefs facade.
+ * @param {!Object} state The state returned from the background context.
+ * @private
+ */
+cvox.OptionsPage.installState_ = function(state) {
+  cvox.OptionsPage.prefsState_ = state['prefs'] || {};
+  cvox.OptionsPage.keyMapState_ = state['keyBindings'] ?
+      cvox.KeyMap.fromJSON(state['keyBindings']) : cvox.KeyMap.fromDefaults();
+
+  cvox.OptionsPage.prefs = {
+    getPrefs: function() {
+      return cvox.OptionsPage.prefsState_;
+    },
+    getKeyMap: function() {
+      return cvox.OptionsPage.keyMapState_;
+    },
+    setPref: function(key, value) {
+      cvox.OptionsPage.prefsState_[key] = String(value);
+      cvox.OptionsPage.sendBackgroundMessage_({
+        'action': 'setPref',
+        'key': key,
+        'value': value
+      });
+    },
+    setKey: function(command, keySequence) {
+      if (!cvox.OptionsPage.keyMapState_.rebind(command, keySequence)) {
+        return false;
+      }
+      cvox.OptionsPage.sendBackgroundMessage_({
+        'action': 'setKey',
+        'command': command,
+        'keySequence': cvox.KeyUtil.keySequenceToString(keySequence, true)
+      });
+      return true;
+    },
+    sendPrefsToAllTabs: function(sendPrefs, sendKeyBindings) {
+      cvox.OptionsPage.sendBackgroundMessage_({
+        'action': 'broadcastPrefs',
+        'sendPrefs': sendPrefs,
+        'sendKeyBindings': sendKeyBindings
+      });
+    },
+    switchToKeyMap: function(id) {
+      cvox.OptionsPage.sendBackgroundMessage_({
+        'action': 'switchToKeyMap',
+        'keyMapId': id
+      }, function(response) {
+        if (response['prefs']) {
+          document.getElementById('keysContainer').innerHTML = '';
+          cvox.OptionsPage.addKeys();
+          cvox.ChromeVox.msgs.addTranslatedMessagesToDom(document);
+          cvox.OptionsPage.update();
+        }
+      });
+    }
+  };
+};
+
+
+/**
+ * Refreshes the locally cached options state.
+ * @param {function():void=} opt_callback The optional callback.
+ * @private
+ */
+cvox.OptionsPage.refreshState_ = function(opt_callback) {
+  cvox.OptionsPage.sendBackgroundMessage_({
+    'action': 'getState'
+  }, function() {
+    if (opt_callback) {
+      opt_callback();
+    }
+  });
+};
+
+
+/**
+ * Speaks through the background TTS service.
+ * @param {string} text The text to speak.
+ * @param {number=} opt_queueMode The queue mode.
+ * @param {Object=} opt_properties The speech properties.
+ * @private
+ */
+cvox.OptionsPage.speak_ = function(text, opt_queueMode, opt_properties) {
+  cvox.OptionsPage.sendBackgroundMessage_({
+    'action': 'speak',
+    'text': text,
+    'queueMode': opt_queueMode || 0,
+    'properties': opt_properties || {}
+  });
 };
 
 /**
@@ -184,7 +315,7 @@ cvox.OptionsPage.addKeys = function() {
     } else {
       announce = cvox.ChromeVox.msgs.getMsg('key_conflict', [announce]);
     }
-    chrome.extension.getBackgroundPage().speak(announce);
+    cvox.OptionsPage.speak_(announce);
     this.prevTime = currentTime;
 
     evt.preventDefault();
@@ -268,7 +399,7 @@ cvox.OptionsPage.addKeys = function() {
     modifierSectionParent.insertBefore(labelElement, modifierSectionSibling);
     modifierSectionParent.insertBefore(inputElement, labelElement);
     var cvoxKey = document.getElementById('cvoxKey');
-    cvoxKey.value = localStorage['cvoxKey'];
+    cvoxKey.value = cvox.OptionsPage.prefs.getPrefs()['cvoxKey'] || '';
 
     cvoxKey.addEventListener('keydown', function(evt) {
       if (!this.modifierSeq_) {
@@ -282,7 +413,7 @@ cvox.OptionsPage.addKeys = function() {
       if (!this.modifierSeq_.isAnyModifierActive()) {
         // Indicate error and instructions excluding tab.
         if (evt.keyCode != 9) {
-          chrome.extension.getBackgroundPage().speak(
+            cvox.OptionsPage.speak_(
               cvox.ChromeVox.msgs.getMsg('modifier_entry_error'), 0, {});
         }
         this.modifierSeq_ = null;
@@ -305,9 +436,9 @@ cvox.OptionsPage.addKeys = function() {
           var modifierStr =
               cvox.KeyUtil.keySequenceToString(this.modifierSeq_, true, true);
           evt.target.value = modifierStr;
-          chrome.extension.getBackgroundPage().speak(
+          cvox.OptionsPage.speak_(
               cvox.ChromeVox.msgs.getMsg('modifier_entry_set', [modifierStr]));
-          localStorage['cvoxKey'] = modifierStr;
+          cvox.OptionsPage.prefs.setPref('cvoxKey', modifierStr);
           this.modifierSeq_ = null;
         }
         evt.preventDefault();
@@ -411,9 +542,6 @@ cvox.OptionsPage.reset = function() {
   cvox.OptionsPage.updateStatus_(announce);
 
   cvox.OptionsPage.prefs.switchToKeyMap(id);
-  document.getElementById('keysContainer').innerHTML = '';
-  cvox.OptionsPage.addKeys();
-  cvox.ChromeVox.msgs.addTranslatedMessagesToDom(document);
 };
 
 /**

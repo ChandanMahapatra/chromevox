@@ -33,6 +33,7 @@ goog.require('cvox.KeyMap');
  * @constructor
  */
 cvox.ChromeVoxPrefs = function() {
+  var manifest = chrome.runtime.getManifest();
   var lastRunVersion = localStorage['lastRunVersion'];
   if (!lastRunVersion) {
     lastRunVersion = '1.16.0';
@@ -43,7 +44,7 @@ cvox.ChromeVoxPrefs = function() {
   if (lastRunVersion == '1.16.0') {
     loadExistingSettings = false;
   }
-  localStorage['lastRunVersion'] = chrome.app.getDetails().version;
+  localStorage['lastRunVersion'] = manifest.version;
 
   /**
    * The current mapping from keys to command.
@@ -135,7 +136,7 @@ cvox.ChromeVoxPrefs.prototype.getPrefs = function() {
   for (var pref in cvox.ChromeVoxPrefs.DEFAULT_PREFS) {
     prefs[pref] = localStorage[pref];
   }
-  prefs['version'] = chrome.app.getDetails().version;
+  prefs['version'] = chrome.runtime.getManifest().version;
   return prefs;
 };
 

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 /**
- * @fileoverview Script that runs on the background page.
+ * @fileoverview Script that runs in the background context.
  *
  * @author dmazzoni@google.com (Dominic Mazzoni)
  */
@@ -32,6 +32,7 @@ goog.require('cvox.EarconsBackground');
 goog.require('cvox.ExtensionBridge');
 goog.require('cvox.HostFactory');
 goog.require('cvox.InjectedScriptLoader');
+goog.require('cvox.KeySequence');
 goog.require('cvox.NavBraille');
 // TODO(dtseng): This is required to prevent Closure from stripping our export
 // prefs on window.
@@ -50,7 +51,7 @@ cvox.ChromeVoxBackground = function() {
 
 
 /**
- * Initialize the background page: set up TTS and bridge listeners.
+ * Initialize the background context: set up TTS and bridge listeners.
  */
 cvox.ChromeVoxBackground.prototype.init = function() {
   // In the case of ChromeOS, only continue initialization if this instance of
@@ -100,39 +101,11 @@ cvox.ChromeVoxBackground.prototype.init = function() {
   cvox.ChromeVox.tts = this.tts;
   cvox.ChromeVox.braille = this.backgroundBraille_;
 
-  var listOfFiles;
-
-  // These lists of files must match the content_scripts section in
-  // the manifest files.
-  if (COMPILED) {
-    listOfFiles = ['chromeVoxChromePageScript.js'];
-  } else {
-    listOfFiles = [
-        'closure/closure_preinit.js',
-        'closure/base.js',
-        'deps.js',
-        'chromevox/injected/loader.js'];
-  }
-
-  var self = this;
-  var stageTwo = function(code) {
-    // Inject the content script into all running tabs.
-    chrome.windows.getAll({'populate': true}, function(windows) {
-      for (var i = 0; i < windows.length; i++) {
-        var tabs = windows[i].tabs;
-        for (var j = 0; j < tabs.length; j++) {
-          var tab = tabs[j];
-          self.injectChromeVoxIntoTab(tab, listOfFiles, code);
-        }
-      }
-    });
-  };
-
   this.checkVersionNumber();
 
   // Set up a message passing system for goog.provide() calls from
   // within the content scripts.
-  chrome.extension.onMessage.addListener(
+  chrome.runtime.onMessage.addListener(goog.bind(
       function(request, sender, callback) {
         if (request['srcFile']) {
           var srcFile = request['srcFile'];
@@ -141,14 +114,16 @@ cvox.ChromeVoxBackground.prototype.init = function() {
               function(code) {
                 callback({'code': code[srcFile]});
               });
+          return true;
         }
-        return true;
-      });
 
-  // We use fetchCode instead of chrome.extensions.executeFile because
-  // executeFile doesn't propagate the file name to the content script
-  // which means that script is not visible in Dev Tools.
-  cvox.InjectedScriptLoader.fetchCode(listOfFiles, stageTwo);
+        if (request['target'] == 'options') {
+          this.handleOptionsMessage_(request, callback);
+          return true;
+        }
+
+        return false;
+      }, this));
 
   if (localStorage['active'] == 'false') {
     // Warn the user when the browser first starts if ChromeVox is inactive.
@@ -213,6 +188,133 @@ cvox.ChromeVoxBackground.prototype.injectChromeVoxIntoTab =
 
   // Now inject the ChromeVox content script code into the tab.
   files.forEach(function(file) { executeScript(code[file]); });
+};
+
+
+/**
+ * @return {!Object} The options state payload.
+ * @private
+ */
+cvox.ChromeVoxBackground.prototype.getOptionsState_ = function() {
+  return {
+    'prefs': this.prefs.getPrefs(),
+    'keyBindings': this.prefs.getKeyMap().toJSON()
+  };
+};
+
+
+/**
+ * Enables or disables the legacy native accessibility path when available.
+ * @param {boolean} enabled Whether the native accessibility path is enabled.
+ * @private
+ */
+cvox.ChromeVoxBackground.prototype.setNativeAccessibilityEnabled_ =
+    function(enabled) {
+  if (chrome.experimental && chrome.experimental.accessibility &&
+      chrome.experimental.accessibility.setNativeAccessibilityEnabled) {
+    chrome.experimental.accessibility.setNativeAccessibilityEnabled(enabled);
+  }
+};
+
+
+/**
+ * Applies a preference mutation that affects the background context.
+ * @param {string} pref The preference key.
+ * @param {*} value The new preference value.
+ * @param {boolean} announce Whether to announce the change.
+ * @private
+ */
+cvox.ChromeVoxBackground.prototype.applyPrefChange_ =
+    function(pref, value, announce) {
+  if (pref == 'active' && value != cvox.ChromeVox.isActive) {
+    if (cvox.ChromeVox.isActive) {
+      this.tts.speak(cvox.ChromeVox.msgs.getMsg('chromevox_inactive'));
+      this.setNativeAccessibilityEnabled_(true);
+    } else {
+      this.setNativeAccessibilityEnabled_(false);
+    }
+  } else if (pref == 'earcons') {
+    this.earcons.enabled = value;
+  } else if (pref == 'sticky' && announce) {
+    if (value) {
+      this.tts.speak(cvox.ChromeVox.msgs.getMsg('sticky_mode_enabled'));
+    } else {
+      this.tts.speak(cvox.ChromeVox.msgs.getMsg('sticky_mode_disabled'));
+    }
+  } else if (pref == 'typingEcho' && announce) {
+    var announceMessage = '';
+    switch (value) {
+      case cvox.TypingEcho.CHARACTER:
+        announceMessage = cvox.ChromeVox.msgs.getMsg('character_echo');
+        break;
+      case cvox.TypingEcho.WORD:
+        announceMessage = cvox.ChromeVox.msgs.getMsg('word_echo');
+        break;
+      case cvox.TypingEcho.CHARACTER_AND_WORD:
+        announceMessage =
+            cvox.ChromeVox.msgs.getMsg('character_and_word_echo');
+        break;
+      case cvox.TypingEcho.NONE:
+        announceMessage = cvox.ChromeVox.msgs.getMsg('none_echo');
+        break;
+      default:
+        break;
+    }
+    if (announceMessage) {
+      this.tts.speak(announceMessage);
+    }
+  }
+
+  this.prefs.setPref(pref, value);
+  this.readPrefs();
+};
+
+
+/**
+ * Handles request/response messaging from extension pages in MV3.
+ * @param {!Object} request The request payload.
+ * @param {function(*):void} callback The response callback.
+ * @private
+ */
+cvox.ChromeVoxBackground.prototype.handleOptionsMessage_ =
+    function(request, callback) {
+  switch (request['action']) {
+    case 'getState':
+      callback(this.getOptionsState_());
+      break;
+    case 'setPref':
+      this.applyPrefChange_(request['key'], request['value'], false);
+      callback(this.getOptionsState_());
+      break;
+    case 'setKey':
+      var keySequence = cvox.KeySequence.fromStr(request['keySequence']);
+      var success = false;
+      if (keySequence) {
+        success = this.prefs.setKey(request['command'], keySequence);
+      }
+      var keyState = this.getOptionsState_();
+      keyState['success'] = success;
+      callback(keyState);
+      break;
+    case 'switchToKeyMap':
+      this.prefs.switchToKeyMap(request['keyMapId']);
+      callback(this.getOptionsState_());
+      break;
+    case 'broadcastPrefs':
+      this.prefs.sendPrefsToAllTabs(
+          request['sendPrefs'], request['sendKeyBindings']);
+      callback(this.getOptionsState_());
+      break;
+    case 'speak':
+      this.tts.speak(
+          request['text'], request['queueMode'] || 0,
+          request['properties'] || {});
+      callback({});
+      break;
+    default:
+      callback({});
+      break;
+  }
 };
 
 
@@ -332,49 +434,7 @@ cvox.ChromeVoxBackground.prototype.addBridgeListener = function() {
       if (action == 'getPrefs') {
         this.prefs.sendPrefsToPort(port);
       } else if (action == 'setPref') {
-        if (msg['pref'] == 'active' &&
-            msg['value'] != cvox.ChromeVox.isActive) {
-          if (cvox.ChromeVox.isActive) {
-            this.tts.speak(cvox.ChromeVox.msgs.getMsg('chromevox_inactive'));
-            chrome.experimental.accessibility.setNativeAccessibilityEnabled(
-                true);
-          } else {
-            chrome.experimental.accessibility.setNativeAccessibilityEnabled(
-                false);
-          }
-        } else if (msg['pref'] == 'earcons') {
-          this.earcons.enabled = msg['value'];
-        } else if (msg['pref'] == 'sticky' && msg['announce']) {
-          if (msg['value']) {
-            this.tts.speak(cvox.ChromeVox.msgs.getMsg('sticky_mode_enabled'));
-          } else {
-            this.tts.speak(
-                cvox.ChromeVox.msgs.getMsg('sticky_mode_disabled'));
-          }
-        } else if (msg['pref'] == 'typingEcho' && msg['announce']) {
-          var announce = '';
-          switch (msg['value']) {
-            case cvox.TypingEcho.CHARACTER:
-              announce = cvox.ChromeVox.msgs.getMsg('character_echo');
-              break;
-            case cvox.TypingEcho.WORD:
-              announce = cvox.ChromeVox.msgs.getMsg('word_echo');
-              break;
-            case cvox.TypingEcho.CHARACTER_AND_WORD:
-              announce = cvox.ChromeVox.msgs.getMsg('character_and_word_echo');
-              break;
-            case cvox.TypingEcho.NONE:
-              announce = cvox.ChromeVox.msgs.getMsg('none_echo');
-              break;
-            default:
-              break;
-          }
-          if (announce) {
-            this.tts.speak(announce);
-          }
-        }
-        this.prefs.setPref(msg['pref'], msg['value']);
-        this.readPrefs();
+        this.applyPrefChange_(msg['pref'], msg['value'], !!msg['announce']);
       }
       break;
     case 'Math':
@@ -439,7 +499,7 @@ cvox.ChromeVoxBackground.prototype.checkVersionNumber = function() {
  */
 cvox.ChromeVoxBackground.prototype.displayReleaseNotes = function() {
   chrome.tabs.create(
-      {'url': 'http://chromevox.com/release_notes.html'});
+  {'url': 'https://chromevox.com/release_notes.html'});
 };
 
 
@@ -447,36 +507,25 @@ cvox.ChromeVoxBackground.prototype.displayReleaseNotes = function() {
  * Gets the current version number from the extension manifest.
  */
 cvox.ChromeVoxBackground.prototype.showNotesIfNewVersion = function() {
-  // Check version number in manifest.
-  var url = chrome.extension.getURL('manifest.json');
-  var xhr = new XMLHttpRequest();
-  var context = this;
-  xhr.onreadystatechange = function() {
-    if (xhr.readyState == 4) {
-      var manifest = JSON.parse(xhr.responseText);
-      console.log('Version: ' + manifest.version);
+  var manifest = chrome.runtime.getManifest();
+  console.log('Version: ' + manifest.version);
 
-      var shouldShowReleaseNotes =
-          (context.localStorageVersion != manifest.version);
+  var shouldShowReleaseNotes =
+      (this.localStorageVersion != manifest.version);
 
-      // On Chrome OS, don't show the release notes the first time, only
-      // after a version upgrade.
-      if (navigator.userAgent.indexOf('CrOS') != -1 &&
-          context.localStorageVersion == undefined) {
-        shouldShowReleaseNotes = false;
-      }
+  // On Chrome OS, don't show the release notes the first time, only
+  // after a version upgrade.
+  if (navigator.userAgent.indexOf('CrOS') != -1 &&
+      this.localStorageVersion == undefined) {
+    shouldShowReleaseNotes = false;
+  }
 
-      if (shouldShowReleaseNotes) {
-        context.displayReleaseNotes();
-      }
+  if (shouldShowReleaseNotes) {
+    this.displayReleaseNotes();
+  }
 
-      // Update version number in local storage
-      localStorage['versionString'] = manifest.version;
-      this.localStorageVersion = manifest.version;
-    }
-  };
-  xhr.open('GET', url);
-  xhr.send();
+  localStorage['versionString'] = manifest.version;
+  this.localStorageVersion = manifest.version;
 };
 
 

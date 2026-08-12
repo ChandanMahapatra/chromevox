@@ -1,18 +1,20 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "name": "__MSG_CHROMEVOX_NAME__",
   "version": "1.0",
   "description": "__MSG_CHROMEVOX_DESCRIPTION__.",
   "background": {
-    "page": "chromevox/background/background.html"
+    "service_worker": "chromevox/background/service_worker.js"
   },
   "permissions": [
     "bookmarks",
-    "experimental",
     "history",
+    "storage",
     "tabs",
     "tts",
-    "brailleDisplayPrivate",
+    "brailleDisplayPrivate"
+  ],
+  "host_permissions": [
     "<all_urls>"
   ],
   "content_scripts": [
@@ -32,12 +34,21 @@
     "128": "chromevox/chromevox-128.png"
   },
   "web_accessible_resources": [
-    "chromevox/injected/api_util.js",
-    "chromevox/injected/api.js",
-    "chromevox/injected/mathjax_external_util.js",
-    "chromevox/injected/mathjax.js"
+    {
+      "resources": [
+        "chromevox/injected/api_util.js",
+        "chromevox/injected/api.js",
+        "chromevox/injected/mathjax_external_util.js",
+        "chromevox/injected/mathjax.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
   ],
-  "options_page": "chromevox/background/options.html",
+  "options_ui": {
+    "page": "chromevox/background/options.html"
+  },
 
   "default_locale": "en"
 }
